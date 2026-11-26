@@ -1,0 +1,105 @@
+name: Upload lab reports
+
+# TEST MODE: manual runs only, reading Excel files from the repo's reports/ folder.
+# The schedule is switched off on purpose: files in the repo cannot be moved to a
+# "processed" folder between runs, so a scheduled run would upload the same files again.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Where the Excel files are"
+        type: choice
+        options:
+          - repo
+          - drive
+        default: repo
+      dry_run:
+        description: "Dry run (list the matches, upload nothing)"
+        type: boolean
+        default: true
+      limit:
+        description: "Max files to process (0 = all)"
+        type: string
+        default: "0"
+  # schedule:
+  #   - cron: "30 1,3,5 * * *"   # 07:00, 09:00 and 11:00 IST. Only enable with source=drive.
+
+concurrency:
+  group: upload-lab-reports
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # needed to commit the removed / moved report files back to the repo
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Upload reports
+        env:
+          CLINIC_USER: ${{ secrets.CLINIC_USER }}
+          CLINIC_PASS: ${{ secrets.CLINIC_PASS }}
+          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          INPUT_SOURCE: ${{ inputs.source }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_LIMIT: ${{ inputs.limit }}
+        run: |
+          ARGS=""
+          if [ "$INPUT_SOURCE" = "drive" ]; then
+            ARGS="--drive"
+          else
+            ARGS="--reports-dir reports"
+          fi
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          case "$INPUT_LIMIT" in
+            ''|0) ;;
+            *[!0-9]*) echo "limit must be a number"; exit 1 ;;
+            *) ARGS="$ARGS --limit $INPUT_LIMIT" ;;
+          esac
+          python upload_lab_reports.py $ARGS
+
+      # The script runs on a temporary machine, so its removals and moves only exist there.
+      # This step commits them: uploaded files disappear from reports/, files that could not be
+      # uploaded appear in error/. Skipped for dry runs and for Drive mode (Drive does the moving).
+      - name: Commit removed and moved files back to the repo
+        if: always() && !inputs.dry_run && inputs.source == 'repo'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -f -- reports   # -f: reports/ is in .gitignore, which makes plain "git add" exit with an error
+          if [ -d error ]; then git add -A -f -- error; fi
+          if git diff --cached --quiet; then
+            echo "No file changes to commit."
+          else
+            git commit -m "Lab report upload: remove uploaded files, set aside failed ones"
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Save log and failure screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-log
+          path: |
+            results.csv
+            screenshots/
+          if-no-files-found: ignore
+          retention-days: 30   # results.csv is the only record of what was uploaded, since files are removed
