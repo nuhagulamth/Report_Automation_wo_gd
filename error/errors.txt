@@ -1,0 +1,20 @@
+======================================================================
+File:       4510301-Mahalakshmi_Senthilkumar.xlsx
+Patient ID: 4510301
+Time:       2026-11-27 07:08:37
+Step:       4 check the Patient box now shows '<ID> - <Name>'
+Page:       https://indiaclinic.twinsdigital.com/ui/clinic/modules/home
+Error:      Locator expected to have Value 're.compile('^\\s*4510301\\s*-\\s*\\S')'
+
+Technical details:
+Locator expected to have Value 're.compile('^\\s*4510301\\s*-\\s*\\S')'
+Actual value: 4510301 
+Call log:
+  - Expect "to_have_value" locator("header input, .v-toolbar input").first.first with timeout 30000ms
+  - waiting for locator("header input, .v-toolbar input").first.first
+    64 × locator resolved to <input type="text" role="combobox" autocomplete="off" aria-label="Patient"/>
+       - unexpected value "4510301"
+
+Aria snapshot:
+- combobox "Patient": "4510301"
+
