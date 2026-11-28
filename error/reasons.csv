@@ -1,2 +1,0 @@
-time,file,reason
-2026-11-28T06:40:02,5967001-Deepa_Negi.xlsx,Patient 5967001 could not be selected: the ID was typed in the Patient box but ICAPP did not open that patient. Check the ID exists in ICAPP and matches the file name.
