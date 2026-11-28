@@ -1,0 +1,165 @@
+name: Upload lab reports
+
+# Where the Excel files come from (choose when you click "Run workflow"):
+#   repo   - the reports/ folder in this repo. Uploaded files are removed, failed ones go to error/,
+#            and the workflow commits that back to the repo.
+#   rclone - your Google Drive folder, reached with rclone (secret RCLONE_CONF). Uploaded files move
+#            to a "processed" subfolder in Drive, failed ones to "error".
+#   drive  - your Drive folder through a Google Cloud service account (secrets GDRIVE_SA_JSON and
+#            DRIVE_FOLDER_ID). Not needed if you use rclone.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Where the Excel files are"
+        type: choice
+        options:
+          - repo
+          - rclone
+          - drive
+        default: repo
+      dry_run:
+        description: "Dry run (list the matches, upload nothing)"
+        type: boolean
+        default: true
+      limit:
+        description: "Max files to process (0 = all)"
+        type: string
+        default: "0"
+  # SCHEDULE (switched off). Turn it on only after one real upload has worked with source=rclone.
+  # Scheduled runs always use rclone and do real uploads. Remove the leading "# " from the next 2 lines.
+  # schedule:
+  #   - cron: "30 1,3,5 * * *"   # 07:00, 09:00 and 11:00 IST (cron runs in UTC)
+
+concurrency:
+  group: upload-lab-reports
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # needed to commit the removed / moved report files back to the repo (source=repo)
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Decide the run settings
+        id: cfg
+        env:
+          INPUT_SOURCE: ${{ inputs.source }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_LIMIT: ${{ inputs.limit }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            SOURCE="$INPUT_SOURCE"; DRY="$INPUT_DRY_RUN"; LIMIT="$INPUT_LIMIT"
+          else
+            SOURCE="rclone"; DRY="false"; LIMIT="0"   # scheduled runs
+          fi
+          case "$LIMIT" in
+            ''|*[!0-9]*) echo "limit must be a number"; exit 1 ;;
+          esac
+          {
+            echo "source=$SOURCE"
+            echo "dry_run=$DRY"
+            echo "limit=$LIMIT"
+          } >> "$GITHUB_OUTPUT"
+          echo "Settings: source=$SOURCE dry_run=$DRY limit=$LIMIT"
+
+      - name: Install rclone
+        if: steps.cfg.outputs.source == 'rclone'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rclone
+          rclone version | head -1
+
+      - name: Write the rclone login from the secret
+        if: steps.cfg.outputs.source == 'rclone'
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          if [ -z "$RCLONE_CONF" ]; then
+            echo "The secret RCLONE_CONF is empty or missing. Add it under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$RCLONE_CONF" > "$RUNNER_TEMP/rclone.conf"
+          echo "RCLONE_CONFIG=$RUNNER_TEMP/rclone.conf" >> "$GITHUB_ENV"
+
+      - name: Upload reports
+        env:
+          CLINIC_USER: ${{ secrets.CLINIC_USER }}
+          CLINIC_PASS: ${{ secrets.CLINIC_PASS }}
+          ATTACH_USER: ${{ secrets.ATTACH_USER }}   # optional: separate login for attaching the PDFs
+          ATTACH_PASS: ${{ secrets.ATTACH_PASS }}   # leave the secrets out to use CLINIC_USER / CLINIC_PASS
+          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          RCLONE_REMOTE_VAR: ${{ vars.RCLONE_REMOTE }}
+          SOURCE: ${{ steps.cfg.outputs.source }}
+          DRY: ${{ steps.cfg.outputs.dry_run }}
+          LIMIT: ${{ steps.cfg.outputs.limit }}
+        run: |
+          ARGS=""
+          if [ "$SOURCE" = "repo" ]; then
+            ARGS="--reports-dir reports"
+          else
+            ARGS="--drive"
+          fi
+          if [ "$SOURCE" = "rclone" ]; then
+            # remote name and folder; "gdrive:" means the remote's root is already the reports folder
+            export RCLONE_REMOTE="${RCLONE_REMOTE_VAR:-gdrive:}"
+          fi
+          if [ "$DRY" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ "$LIMIT" != "0" ]; then
+            ARGS="$ARGS --limit $LIMIT"
+          fi
+          python upload_lab_reports.py $ARGS
+
+      # The script runs on a temporary machine, so its removals and moves only exist there.
+      # This step commits them: uploaded files disappear from reports/, files that could not be
+      # uploaded appear in error/. Skipped for dry runs and for Drive modes (Drive does the moving).
+      - name: Commit removed and moved files back to the repo
+        if: always() && steps.cfg.outputs.dry_run == 'false' && steps.cfg.outputs.source == 'repo'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -f -- reports   # -f: reports/ is in .gitignore, which makes plain "git add" exit with an error
+          # error/  failed Excel files, failed PDFs and reasons.csv
+          # pdfs/   PDFs waiting to be attached together with their Excel (removed here once handled)
+          # pdfs_retry/  PDFs whose attachment is tried again (Excel was uploaded earlier)
+          # status/ attached.csv, read and cleared by the Apps Script
+          for d in error pdfs pdfs_retry status; do
+            if [ -d "$d" ]; then git add -A -f -- "$d"; fi
+          done
+          if git diff --cached --quiet; then
+            echo "No file changes to commit."
+          else
+            git commit -m "Lab report upload: remove uploaded files and attached PDFs, set aside failed ones"
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Save log and failure screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-log
+          path: |
+            results.csv
+            screenshots/
+          if-no-files-found: ignore
+          retention-days: 30   # results.csv is the only record of what was uploaded, since files are removed
