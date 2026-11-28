@@ -1,0 +1,2 @@
+time,file,reason
+2026-11-28T05:46:28,5804601-Anupam_Yunas.xlsx,Stopped at step 4 check the Patient box now shows '<ID> - <Name>' (try 3): Locator expected to have Value 're.compile('^\\s*5804601\\s*-\\s*\\S')'
