@@ -1,2 +1,3 @@
 time,file,reason
 2026-11-28T06:21:14,5779301-Dilraj_Sandhu.xlsx,Patient 5779301 could not be selected: the ID was typed in the Patient box but ICAPP did not open that patient. Check the ID exists in ICAPP and matches the file name.
+2026-11-28T06:33:32,5779301-Dilraj_Sandhu.xlsx,Patient 5779301 could not be selected: the ID was typed in the Patient box but ICAPP did not open that patient. Check the ID exists in ICAPP and matches the file name.
